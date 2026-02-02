@@ -143,6 +143,7 @@ jobs:
           disable_base64: true
 
       - name: Pull tufup data from R2
+        shell: bash
         run: |
           rclone copy r2:${{ secrets.R2_PRIVATE_BUCKET }}/tufup/${{ matrix.platform }}/keystore/ \
             tufup/${{ matrix.platform }}/keystore/ \
@@ -156,6 +157,7 @@ jobs:
         run: uv run repo_add_bundle.py ${{ github.ref_name }} --platform ${{ matrix.platform }}
 
       - name: Push tufup data to R2
+        shell: bash
         run: |
           rclone sync tufup/${{ matrix.platform }}/repository/ \
             r2:${{ secrets.R2_PUBLIC_BUCKET }}/tufup/${{ matrix.platform }}/repository/ \
