@@ -1,0 +1,180 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or commit SHA to release"
+        required: true
+        default: "main"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          repository: "icar1an/headbird"
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Build app
+        run: uv run pyinstaller --clean main.spec --noconfirm
+
+      - name: Upload raw build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.os }}
+          path: dist/
+          retention-days: 1
+
+  package:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          repository: "icar1an/headbird"
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-${{ matrix.os }}
+          path: dist
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          chmod +x packaging/make_dmg.sh
+          packaging/make_dmg.sh
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup -y
+          $version = "${{ inputs.ref }}"
+          if ($version -like "v*") { $version = $version.Substring(1) } else { $version = "0.1.0" }
+          & "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe" "/DMyAppVersion=$version" "packaging\\installer.iss"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x packaging/build_appimage.sh
+          packaging/build_appimage.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: headsurf-${{ runner.os }}
+          path: |
+            Headsurf-macos.dmg
+            packaging\\Headsurf-windows-setup.exe
+            Headsurf-linux.AppImage
+
+  package-update:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        include:
+          - os: macos-latest
+            platform: macos
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          repository: "icar1an/headbird"
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-${{ matrix.os }}
+          path: dist
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Setup Rclone
+        uses: AnimMouse/setup-rclone@v1
+        with:
+          rclone_config: |
+            [r2]
+            type = s3
+            provider = Cloudflare
+            access_key_id = ${{ secrets.R2_ACCESS_KEY_ID }}
+            secret_access_key = ${{ secrets.R2_SECRET_ACCESS_KEY }}
+            endpoint = https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+            acl = private
+
+      - name: Pull tufup data from R2
+        run: |
+          rclone copy r2:${{ secrets.R2_PRIVATE_BUCKET }}/tufup/${{ matrix.platform }}/keystore/ \
+            tufup/${{ matrix.platform }}/keystore/ \
+            -v
+          rclone copy r2:${{ secrets.R2_PUBLIC_BUCKET }}/tufup/${{ matrix.platform }}/repository/ \
+            tufup/${{ matrix.platform }}/repository/ \
+            -v
+
+      - name: Package update bundle
+        run: uv run repo_add_bundle.py
+
+      - name: Push tufup data to R2
+        run: |
+          rclone sync tufup/${{ matrix.platform }}/repository/ \
+            r2:${{ secrets.R2_PUBLIC_BUCKET }}/tufup/${{ matrix.platform }}/repository/ \
+            -v
+
+  release:
+    needs: [package, package-update]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/Headsurf-macos.dmg
+            artifacts/**/Headsurf-windows-setup.exe
+            artifacts/**/Headsurf-linux.AppImage
