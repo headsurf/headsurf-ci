@@ -34,6 +34,26 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      - name: Setup Rclone
+        uses: AnimMouse/setup-rclone@v1
+        with:
+          rclone_config: |
+            [r2]
+            type = s3
+            provider = Cloudflare
+            access_key_id = ${{ secrets.R2_ACCESS_KEY_ID }}
+            secret_access_key = ${{ secrets.R2_SECRET_ACCESS_KEY }}
+            endpoint = https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+            acl = private
+          disable_base64: true
+
+      - name: Pull tufup data from R2
+        shell: bash
+        run: |
+          rclone copy r2:${{ secrets.R2_PUBLIC_BUCKET }}/tufup/${{ matrix.platform }}/repository/ \
+            tufup/${{ matrix.platform }}/repository/ \
+            -v
+
       - name: Build app
         run: uv run pyinstaller --clean main.spec --noconfirm
 
