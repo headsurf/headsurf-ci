@@ -110,10 +110,6 @@ jobs:
           # Validate stapling worked
           spctl -a -vv "dist/$APP_NAME"
 
-      - name: Install create-dmg
-        if: runner.os == 'macOS'
-        run: brew install create-dmg
-
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
